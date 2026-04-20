@@ -60,6 +60,12 @@
         </dependency>
 
         <dependency>
+            <groupId>com.github.serceman</groupId>
+            <artifactId>jnr-fuse</artifactId>
+            <version>0.5.7</version>
+        </dependency>
+
+        <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.version}</version>
@@ -143,6 +149,11 @@
                 <artifactId>maven-assembly-plugin</artifactId>
                 <version>3.7.1</version>
                 <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>com.molina.cvmfs.cli.CvmfsCli</mainClass>
+                        </manifest>
+                    </archive>
                     <descriptorRefs>
                         <descriptorRef>jar-with-dependencies</descriptorRef>
                     </descriptorRefs>
