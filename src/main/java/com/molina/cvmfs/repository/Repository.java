@@ -116,7 +116,7 @@ public class Repository {
     }
 
     public Catalog retrieveCurrentRootCatalog() throws CvmfsException {
-        var hash = currentTag != null ? currentTag.hash() : manifest.rootHash();
+        var hash = currentTag != null ? currentTag.hash() : manifest.rootCatalog();
         return retrieveCatalog(hash);
     }
 

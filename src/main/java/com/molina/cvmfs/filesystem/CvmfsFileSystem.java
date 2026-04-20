@@ -29,8 +29,9 @@ public class CvmfsFileSystem extends FuseStubFS {
 
     record OpenFile(String path, FileLike file) {}
 
-    public CvmfsFileSystem(Repository repository) {
+    public CvmfsFileSystem(Repository repository) throws CvmfsException {
         this.repository = repository;
+        repository.retrieveCurrentRootCatalog();
     }
 
     private DirectoryEntry cachedLookup(String path) throws CvmfsException {

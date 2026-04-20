@@ -30,7 +30,7 @@ public class CvmfsCli {
             var fs = new CvmfsFileSystem(repository);
 
             System.out.println("Mounting " + repository.fqrn() + " at " + mountPoint);
-            fs.mount(mountPoint, false, false, new String[]{"-o", "fsname=cvmfs-java"});
+            fs.mount(mountPoint, true, false, new String[]{"-o", "fsname=cvmfs-java"});
         } catch (Exception e) {
             System.err.println("Fatal: " + e.getMessage());
             System.exit(1);
