@@ -2,7 +2,10 @@ package com.molina.cvmfs.repository;
 
 import com.molina.cvmfs.catalog.Catalog;
 import com.molina.cvmfs.catalog.CatalogStatistics;
+import com.molina.cvmfs.common.ChunkedFile;
 import com.molina.cvmfs.common.CvmfsException;
+import com.molina.cvmfs.common.FileLike;
+import com.molina.cvmfs.common.RegularFile;
 import com.molina.cvmfs.directoryentry.DirectoryEntry;
 import com.molina.cvmfs.fetcher.Fetcher;
 import com.molina.cvmfs.history.History;
@@ -13,6 +16,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class Repository {
     private final Map<String, Catalog> openedCatalogs = new HashMap<>();
@@ -177,5 +181,22 @@ public class Repository {
         var hash = entry.contentHashString()
                 .orElseThrow(() -> new CvmfsException("No content hash for: " + path));
         return retrieveObject(hash);
+    }
+
+    public FileLike openFile(String path) throws CvmfsException {
+        var entry = lookup(path);
+        if (!entry.isFile()) throw new CvmfsException("Not a file: " + path);
+
+        try {
+            if (entry.hasChunks()) {
+                return new ChunkedFile(entry.chunks(), entry.size(), fetcher);
+            }
+            var hash = entry.contentHashString()
+                    .orElseThrow(() -> new CvmfsException("No content hash for: " + path));
+            var filePath = retrieveObject(hash);
+            return new RegularFile(filePath);
+        } catch (IOException e) {
+            throw new CvmfsException("Failed to open file: " + path, e);
+        }
     }
 }
