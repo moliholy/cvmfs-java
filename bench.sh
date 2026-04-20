@@ -1,10 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-JAVA_MOUNT="/tmp/bench_java"
-CPP_MOUNT="/tmp/bench_cpp"
-JAVA_CACHE="/tmp/bench_java_cache"
-CPP_CACHE="/tmp/bench_cpp_cache"
+JAVA_MOUNT="/tmp/bench_java_fuse"
+CPP_MOUNT="/tmp/bench_cpp_java"
+JAVA_CACHE="/tmp/bench_java_fuse_cache"
+CPP_CACHE="/tmp/bench_cpp_java_cache"
 REPO_URL="http://cvmfs-stratum-one.cern.ch/opt/boss"
 REPO_FQRN="boss.cern.ch"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,12 +15,13 @@ ITERATIONS=50
 
 cleanup() {
     umount "$JAVA_MOUNT" 2>/dev/null || diskutil unmount force "$JAVA_MOUNT" 2>/dev/null || true
-    umount "$CPP_MOUNT" 2>/dev/null || diskutil unmount force "$CPP_MOUNT" 2>/dev/null || true
+    sudo umount "$CPP_MOUNT" 2>/dev/null || diskutil unmount force "$CPP_MOUNT" 2>/dev/null || true
     kill "${JAVA_PID:-}" 2>/dev/null || true
-    kill "${CPP_PID:-}" 2>/dev/null || true
+    sudo kill "${CPP_PID:-}" 2>/dev/null || true
     sleep 1
     rmdir "$JAVA_MOUNT" "$CPP_MOUNT" 2>/dev/null || true
-    rm -rf "$JAVA_CACHE" "$CPP_CACHE"
+    sudo rm -rf "$CPP_CACHE"
+    rm -rf "$JAVA_CACHE"
 }
 trap cleanup EXIT
 
@@ -50,9 +51,9 @@ cleanup 2>/dev/null || true
 mkdir -p "$JAVA_MOUNT" "$CPP_MOUNT" "$JAVA_CACHE" "$CPP_CACHE" /var/run/cvmfs
 
 echo "Mounting Java cvmfs-java..."
-"$JAVA_BIN" --enable-native-access=ALL-UNNAMED \
+"$JAVA_BIN" --enable-native-access=ALL-UNNAMED --sun-misc-unsafe=allow \
     -Djava.library.path="$JFFI_LIB_DIR" \
-    -jar "$JAVA_JAR" "$REPO_URL" "$JAVA_MOUNT" "$JAVA_CACHE" &
+    -jar "$JAVA_JAR" "$REPO_URL" "$JAVA_MOUNT" "$JAVA_CACHE" 2>/dev/null &
 JAVA_PID=$!
 sleep 4
 
@@ -66,11 +67,12 @@ echo "  OK: $JAVA_MOUNT"
 echo "Mounting C++..."
 cat > /tmp/cvmfs_bench.local <<EOF
 CVMFS_CACHE_BASE=$CPP_CACHE
+CVMFS_SHARED_CACHE=no
 CVMFS_HTTP_PROXY=DIRECT
 CVMFS_SERVER_URL="http://cvmfs-stratum-one.cern.ch/cvmfs/@fqrn@"
 CVMFS_KEYS_DIR=/etc/cvmfs/keys/cern.ch
 EOF
-cvmfs2 -o config=/tmp/cvmfs_bench.local "$REPO_FQRN" "$CPP_MOUNT" &
+sudo cvmfs2 -o config=/tmp/cvmfs_bench.local "$REPO_FQRN" "$CPP_MOUNT" &
 CPP_PID=$!
 sleep 4
 
@@ -87,12 +89,12 @@ for p in / /testfile /database /pacman-3.29 /pacman-3.29/setup.csh /slc4_ia32_gc
     stat "${JAVA_MOUNT}${p}" &>/dev/null || true
     stat "${CPP_MOUNT}${p}" &>/dev/null || true
 done
-ls "$JAVA_MOUNT/" >/dev/null 2>&1
-ls "$CPP_MOUNT/" >/dev/null 2>&1
-cat "$JAVA_MOUNT/testfile" >/dev/null 2>&1
-cat "$CPP_MOUNT/testfile" >/dev/null 2>&1
-find "$JAVA_MOUNT" -maxdepth 3 >/dev/null 2>&1
-find "$CPP_MOUNT" -maxdepth 3 >/dev/null 2>&1
+ls "$JAVA_MOUNT/" >/dev/null 2>&1 || true
+ls "$CPP_MOUNT/" >/dev/null 2>&1 || true
+cat "$JAVA_MOUNT/testfile" >/dev/null 2>&1 || true
+cat "$CPP_MOUNT/testfile" >/dev/null 2>&1 || true
+find "$JAVA_MOUNT" -maxdepth 3 >/dev/null 2>&1 || true
+find "$CPP_MOUNT" -maxdepth 3 >/dev/null 2>&1 || true
 
 # ── Helpers ──
 
