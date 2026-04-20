@@ -4,11 +4,15 @@ import com.molina.cvmfs.common.CvmfsException;
 import com.github.luben.zstd.Zstd;
 import net.jpountz.lz4.LZ4FrameOutputStream;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
+import java.util.List;
 import java.util.HexFormat;
 import java.util.zip.DeflaterOutputStream;
 
@@ -93,5 +97,59 @@ class FetcherTest {
     void decompressInvalidDataThrows() {
         var garbage = new byte[]{0x01, 0x02, 0x03, 0x04};
         assertThrows(IOException.class, () -> Fetcher.decompress(garbage));
+    }
+
+    @Test
+    void withMirrors(@TempDir Path tempDir) throws Exception {
+        Files.createDirectories(tempDir.resolve("data"));
+        var fetcher = Fetcher.withMirrors(
+                List.of("http://primary.example.com", "http://mirror1.example.com"),
+                tempDir.toString());
+        assertEquals("http://primary.example.com", fetcher.source());
+        assertEquals(1, fetcher.mirrors().size());
+        assertEquals("http://mirror1.example.com", fetcher.mirrors().getFirst());
+    }
+
+    @Test
+    void withMirrorsEmptyThrows(@TempDir Path tempDir) {
+        assertThrows(CvmfsException.class, () ->
+                Fetcher.withMirrors(List.of(), tempDir.toString()));
+    }
+
+    @Test
+    void localDirSourcePrefixed(@TempDir Path tempDir) throws Exception {
+        Files.createDirectories(tempDir.resolve("data"));
+        var fetcher = new Fetcher(tempDir.toString(), tempDir.toString());
+        assertTrue(fetcher.source().startsWith("file://"));
+    }
+
+    @Test
+    void setProxy(@TempDir Path tempDir) throws Exception {
+        Files.createDirectories(tempDir.resolve("data"));
+        var fetcher = new Fetcher("http://example.com", tempDir.toString());
+        fetcher.setProxy("http://proxy.example.com:8080");
+        assertFalse(fetcher.isOffline());
+        assertEquals(0, fetcher.ioErrorCount());
+    }
+
+    @Test
+    void setSources(@TempDir Path tempDir) throws Exception {
+        Files.createDirectories(tempDir.resolve("data"));
+        var fetcher = Fetcher.withMirrors(
+                List.of("http://a.com", "http://b.com", "http://c.com"),
+                tempDir.toString());
+        fetcher.setSources(List.of("http://c.com", "http://a.com", "http://b.com"));
+        assertEquals("http://c.com", fetcher.source());
+        assertEquals(List.of("http://a.com", "http://b.com"), fetcher.mirrors());
+    }
+
+    @Test
+    void mirrorsImmutable(@TempDir Path tempDir) throws Exception {
+        Files.createDirectories(tempDir.resolve("data"));
+        var fetcher = Fetcher.withMirrors(
+                List.of("http://a.com", "http://b.com"),
+                tempDir.toString());
+        assertThrows(UnsupportedOperationException.class, () ->
+                fetcher.mirrors().add("http://c.com"));
     }
 }
