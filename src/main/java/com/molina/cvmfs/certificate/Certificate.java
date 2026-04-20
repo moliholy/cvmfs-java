@@ -1,70 +1,52 @@
 package com.molina.cvmfs.certificate;
 
+import com.molina.cvmfs.common.Common;
+
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileNotFoundException;
-import java.io.UnsupportedEncodingException;
-import java.math.BigInteger;
-import java.nio.charset.Charset;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.security.*;
-import java.security.cert.CertificateEncodingException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 
-/**
- * @author Jose Molina Colmenero
- *         Wraps an X.509 certificate object as stored in CVMFS repositories
- */
 public class Certificate {
     public static final String CERTIFICATE_ROOT_PREFIX = "X";
-    protected File certificateFile;
-    protected X509Certificate opensslCertificate;
 
-    public Certificate(File certificateFile) throws CertificateException, FileNotFoundException {
-        this.certificateFile = certificateFile;
-        CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
-        opensslCertificate = (X509Certificate) certFactory.generateCertificate(new FileInputStream(certificateFile));
+    private final X509Certificate x509;
+
+    public Certificate(File certFile) throws CertificateException, IOException {
+        var factory = CertificateFactory.getInstance("X.509");
+        try (var in = new FileInputStream(certFile)) {
+            x509 = (X509Certificate) factory.generateCertificate(in);
+        }
     }
 
-    public File getCertificateFile() {
-        return certificateFile;
+    public X509Certificate x509() { return x509; }
+
+    public String fingerprint() {
+        return fingerprint("SHA-1");
     }
 
-    public X509Certificate getOpensslCertificate() {
-        return opensslCertificate;
-    }
-
-    public String getFingerPrint() throws CertificateEncodingException {
-        return getFingerPrint("SHA-1");
-    }
-
-    public String getFingerPrint(String algorithm) throws CertificateEncodingException {
-        MessageDigest md;
+    public String fingerprint(String algorithm) {
         try {
-            md = MessageDigest.getInstance(algorithm);
-        } catch (NoSuchAlgorithmException e) {
+            var md = MessageDigest.getInstance(algorithm);
+            return Common.toHex(md.digest(x509.getEncoded()));
+        } catch (NoSuchAlgorithmException | java.security.cert.CertificateEncodingException e) {
             return null;
         }
-        md.update(opensslCertificate.getEncoded());
-        byte[] digest = md.digest();
-        BigInteger hexDigest = new BigInteger(1, digest);
-        return hexDigest.toString();
     }
 
-    /**
-     * Verify a given signature to an expected 'message' string
-     *
-     * @param signature signature to verify
-     * @param message   message to verify against
-     * @return true if the signature is verified through the message
-     */
-    public boolean verify(String signature, String message) throws NoSuchAlgorithmException, InvalidKeyException,
-            SignatureException, UnsupportedEncodingException {
-        PublicKey pubkey = opensslCertificate.getPublicKey();
-        final Signature sig = Signature.getInstance("SHA-1");
-        sig.initVerify(pubkey);
-        sig.update(message.getBytes(Charset.defaultCharset()));
-        return sig.verify(signature.getBytes());
+    public boolean verify(String signature, String message) {
+        try {
+            var pubkey = x509.getPublicKey();
+            var sig = Signature.getInstance("SHA1withRSA");
+            sig.initVerify(pubkey);
+            sig.update(message.getBytes(StandardCharsets.UTF_8));
+            return sig.verify(signature.getBytes(StandardCharsets.UTF_8));
+        } catch (NoSuchAlgorithmException | InvalidKeyException | SignatureException e) {
+            return false;
+        }
     }
 }

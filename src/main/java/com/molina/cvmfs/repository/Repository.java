@@ -1,313 +1,181 @@
 package com.molina.cvmfs.repository;
 
 import com.molina.cvmfs.catalog.Catalog;
-import com.molina.cvmfs.catalog.CatalogReference;
-import com.molina.cvmfs.catalog.exception.CatalogInitializationException;
-import com.molina.cvmfs.certificate.Certificate;
-import com.molina.cvmfs.common.Common;
+import com.molina.cvmfs.catalog.CatalogStatistics;
+import com.molina.cvmfs.common.CvmfsException;
+import com.molina.cvmfs.directoryentry.DirectoryEntry;
 import com.molina.cvmfs.fetcher.Fetcher;
 import com.molina.cvmfs.history.History;
 import com.molina.cvmfs.history.RevisionTag;
-import com.molina.cvmfs.history.exception.HistoryNotFoundException;
 import com.molina.cvmfs.manifest.Manifest;
-import com.molina.cvmfs.manifest.exception.ManifestException;
-import com.molina.cvmfs.manifest.exception.ManifestValidityError;
-import com.molina.cvmfs.manifest.exception.UnknownManifestField;
-import com.molina.cvmfs.repository.exception.CacheDirectoryNotFound;
-import com.molina.cvmfs.repository.exception.FailedToLoadSourceException;
-import com.molina.cvmfs.repository.exception.FileNotFoundInRepositoryException;
-import com.molina.cvmfs.repository.exception.RepositoryNotFoundException;
-import com.molina.cvmfs.revision.Revision;
-import com.molina.cvmfs.rootfile.exception.IncompleteRootFileSignature;
-import com.molina.cvmfs.rootfile.exception.InvalidRootFileSignature;
-import com.molina.cvmfs.rootfile.exception.RootFileException;
-import com.molina.cvmfs.whitelist.Whitelist;
 
-import java.io.*;
-import java.security.cert.CertificateException;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.sql.SQLException;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Locale;
-import java.util.Map;
+import java.util.*;
 
-/**
- * Wrapper around a CVMFS repository representation
- */
 public class Repository {
-    protected Map<String, Catalog> openedCatalogs;
-    protected Manifest manifest;
-    protected String fqrn;
-    protected String type = "unknown";
-    protected Date replicatingSince;
-    protected Date lastReplication;
-    protected boolean replicating;
-    protected Fetcher fetcher;
+    private final Map<String, Catalog> openedCatalogs = new HashMap<>();
+    private final Manifest manifest;
+    private final String fqrn;
+    private final Fetcher fetcher;
+    private RevisionTag currentTag;
 
-    public Repository(Fetcher fetcher) throws IOException, RootFileException {
+    public Repository(Fetcher fetcher) throws IOException, CvmfsException {
         this.fetcher = fetcher;
-        openedCatalogs = new HashMap<>();
-        readManifest();
-        tryToGetLastReplicationTimestamp();
-        tryToGetReplicationState();
+        var manifestFile = fetcher.retrieveRawFile(com.molina.cvmfs.common.Common.MANIFEST_NAME);
+        this.manifest = new Manifest(manifestFile.toFile());
+        this.fqrn = manifest.repositoryName();
     }
 
-    public Repository(String source, String cacheDir) throws RepositoryNotFoundException, RootFileException, CacheDirectoryNotFound, IOException, FailedToLoadSourceException {
-        this(getFetcherFromSource(source, cacheDir));
+    public Manifest manifest() { return manifest; }
+    public String fqrn() { return fqrn; }
+    public Fetcher fetcher() { return fetcher; }
+    public Map<String, Catalog> openedCatalogs() { return Collections.unmodifiableMap(openedCatalogs); }
+
+    public boolean hasHistory() { return manifest.hasHistory(); }
+
+    public int getRevisionNumber() { return manifest.revision(); }
+    public String getRootHash() { return manifest.rootHash(); }
+    public String getName() { return manifest.repositoryName(); }
+    public long getTimestamp() { return manifest.lastModified().getEpochSecond(); }
+
+    public RevisionTag currentTag() throws CvmfsException {
+        if (currentTag != null) return currentTag;
+        try {
+            var history = retrieveHistory();
+            return history.getTagByRevision(manifest.revision())
+                    .orElseThrow(() -> new CvmfsException("Current revision tag not found"));
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to get current tag", e);
+        }
     }
 
-    private static Fetcher getFetcherFromSource(String source, String cacheDirectory)
-            throws FailedToLoadSourceException,
-            IOException, CacheDirectoryNotFound {
-        String finalSource;
-        String serverDefaultLocation = "/srv/cvmfs/";
-        if (source.startsWith("http://"))
-            finalSource = source;
-        else if (new File(serverDefaultLocation + source).exists())
-            finalSource = "file://" + serverDefaultLocation + source;
-        else if (new File(source).exists())
-            finalSource = "file://" + source;
-        else
-            throw new FailedToLoadSourceException(
-                    "Repository not found: " + source);
-        return new Fetcher(finalSource, cacheDirectory);
+    public void setCurrentTag(int revision) throws CvmfsException {
+        try {
+            var history = retrieveHistory();
+            currentTag = history.getTagByRevision(revision)
+                    .orElseThrow(() -> new CvmfsException("Revision " + revision + " not found"));
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to set tag", e);
+        }
+    }
+
+    public RevisionTag getTag(int revision) throws CvmfsException {
+        try {
+            var history = retrieveHistory();
+            return history.getTagByRevision(revision)
+                    .orElseThrow(() -> new CvmfsException("Tag not found for revision " + revision));
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to get tag", e);
+        }
+    }
+
+    public RevisionTag getLastTag() throws CvmfsException {
+        try {
+            var history = retrieveHistory();
+            var tags = history.listTags();
+            if (tags.isEmpty()) throw new CvmfsException("No tags found");
+            return tags.getFirst();
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to get last tag", e);
+        }
     }
 
     public boolean unloadCatalogs() {
-        boolean closed = true;
-        for (Catalog c : openedCatalogs.values()) {
-            if (!c.close())
-                closed = false;
-        }
+        openedCatalogs.values().forEach(Catalog::close);
         openedCatalogs.clear();
-        return closed;
+        return true;
     }
 
-    private CatalogReference findBestFit(CatalogReference[] catalogReferences,
-                                         String path) {
-        CatalogReference bestFit = null;
-        for (CatalogReference cr : catalogReferences) {
-            if (cr.getRootPath().contains(path)) {
-                bestFit = cr;
-            }
-        }
-        return bestFit;
-    }
-
-    protected void readManifest() throws IOException, RootFileException {
-        File manifestFile = fetcher.retrieveRawFile(Common.MANIFEST_NAME);
-        try {
-            manifest = new Manifest(manifestFile);
-        } catch (InvalidRootFileSignature | ManifestValidityError | IncompleteRootFileSignature | UnknownManifestField invalidRootFileSignature) {
-            System.err.println(invalidRootFileSignature.getMessage());
-        }
-        if (manifest == null)
-            throw new ManifestException();
-        fqrn = manifest.getRepositoryName();
-    }
-
-    protected void tryToGetLastReplicationTimestamp() {
-        BufferedReader br = null;
-        lastReplication = new Date(0);
-        try {
-            File file = fetcher.retrieveRawFile(Common.LAST_REPLICATION_NAME);
-            br = new BufferedReader(new FileReader(file));
-            String dateString = br.readLine();
-            lastReplication = new SimpleDateFormat("EEE MMM dd kk:mm:ss z yyyy",
-                    Locale.ENGLISH).parse(dateString);
-            if (!hasRepositoryType())
-                type = "stratum1";
-        } catch (ParseException e) {
-            lastReplication = null;
-        } catch (IOException e) {
-            e.printStackTrace();
-        } finally {
-            if (br != null)
-                try {
-                    br.close();
-                } catch (IOException e) {
-                }
-        }
-    }
-
-    protected void tryToGetReplicationState() {
-        BufferedReader br = null;
-        try {
-            File file = fetcher.retrieveRawFile(Common.REPLICATING_NAME);
-            replicating = false;
-            br = new BufferedReader(new FileReader(file));
-            String dateString = br.readLine();
-            replicating = true;
-            replicatingSince = new SimpleDateFormat("EEE MMM dd kk:mm:ss z yyyy",
-                    Locale.ENGLISH).parse(dateString);
-        } catch (IOException | ParseException e) {
-        } finally {
-            if (br != null)
-                try {
-                    br.close();
-                } catch (IOException e) {
-                }
-        }
-    }
-
-    public String getFqrn() {
-        return fqrn;
-    }
-
-    public String getType() {
-        return type;
-    }
-
-    public Date getReplicatingSince() {
-        return replicatingSince;
-    }
-
-    public Date getLastReplication() {
-        return lastReplication;
-    }
-
-    public boolean isReplicating() {
-        return replicating;
-    }
-
-    public Fetcher getFetcher() {
-        return fetcher;
-    }
-
-    public Manifest getManifest() {
-        return manifest;
-    }
-
-    public boolean verify(String publicKeyPath) {
-        try {
-            Whitelist whitelist = retrieveWhitelist();
-            Certificate certificate = retrieveCertificate();
-            return whitelist.verifySignature(publicKeyPath) &&
-                    !whitelist.hasExpired() &&
-                    whitelist.containsCertificate(certificate) &&
-                    manifest.verifySignature(certificate);
-        } catch (CertificateException | FileNotFoundException e) {
-            e.printStackTrace();
-        } catch (FileNotFoundInRepositoryException | IOException e) {
-            e.printStackTrace();
-        }
-        return false;
-    }
-
-    protected Whitelist retrieveWhitelist() throws IOException {
-        File whitelistFile = fetcher.retrieveRawFile(Common.WHITELIST_NAME);
-        try {
-            return new Whitelist(whitelistFile);
-        } catch (RootFileException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
-
-    public boolean hasRepositoryType() {
-        return type != null && !type.equals("unknown");
-    }
-
-    public boolean hasHistory() {
-        return manifest.hasHistory();
-    }
-
-    public Certificate retrieveCertificate()
-            throws FileNotFoundInRepositoryException, CertificateException, FileNotFoundException {
-        File certificate = retrieveObject(manifest.getCertificate(), Certificate.CERTIFICATE_ROOT_PREFIX);
-        return new Certificate(certificate);
-    }
-
-    /**
-     * Retrieves an object from the content addressable storage
-     *
-     * @param objectHash  hash of the object
-     * @param hash_suffix suffix of the object
-     * @return the object, if exists in the repository
-     */
-    public File retrieveObject(String objectHash, String hash_suffix) throws FileNotFoundInRepositoryException {
-        String path = "data" + File.separator + objectHash.substring(0, 2) + File.separator +
-                objectHash.substring(2, objectHash.length()) + hash_suffix;
+    public Path retrieveObject(String objectHash, String suffix) throws CvmfsException {
+        var path = com.molina.cvmfs.common.Common.composeObjectPath(objectHash, suffix);
         return fetcher.retrieveFile(path);
     }
 
-    public File retrieveObject(String objectHash) throws FileNotFoundInRepositoryException {
+    public Path retrieveObject(String objectHash) throws CvmfsException {
         return retrieveObject(objectHash, "");
     }
 
-    /**
-     * Download and open a catalog from the repository
-     *
-     * @param catalogHash hash of the catalog to download
-     * @return the catalog that corresponds to the hash
-     */
-    public Catalog retrieveCatalog(String catalogHash) {
-        if (openedCatalogs.containsKey(catalogHash))
+    public Catalog retrieveCatalog(String catalogHash) throws CvmfsException {
+        if (openedCatalogs.containsKey(catalogHash)) {
             return openedCatalogs.get(catalogHash);
-        return retrieveAndOpenCatalog(catalogHash);
-    }
-
-    public void retrieveCatalogTree(Catalog catalog) {
-        for (CatalogReference ref : catalog.listNested()) {
-            Catalog newCatalog = ref.retrieveFrom(this);
-            retrieveCatalogTree(newCatalog);
-        }
-    }
-
-    protected Catalog retrieveAndOpenCatalog(String catalogHash) {
-        File catalogFile;
-        try {
-            catalogFile = retrieveObject(catalogHash, Catalog.CATALOG_ROOT_PREFIX);
-            Catalog newCatalog = new Catalog(catalogFile, catalogHash);
-            openedCatalogs.put(catalogHash, newCatalog);
-            return newCatalog;
-        } catch (FileNotFoundInRepositoryException | CatalogInitializationException | SQLException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
-
-    public History retrieveHistory() throws HistoryNotFoundException {
-        if (!hasHistory()) {
-            throw new HistoryNotFoundException();
         }
         try {
-            File historyDB = retrieveObject(manifest.getHistoryDatabase(), "H");
-            return new History(historyDB);
-        } catch (FileNotFoundInRepositoryException | SQLException e) {
-            throw new HistoryNotFoundException();
+            var file = retrieveObject(catalogHash, Catalog.CATALOG_ROOT_PREFIX);
+            var catalog = new Catalog(file.toFile(), catalogHash);
+            openedCatalogs.put(catalogHash, catalog);
+            return catalog;
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to open catalog: " + catalogHash, e);
         }
     }
 
-    public Revision getRevision(String tagName) {
+    public Catalog retrieveCurrentRootCatalog() throws CvmfsException {
+        var hash = currentTag != null ? currentTag.hash() : manifest.rootHash();
+        return retrieveCatalog(hash);
+    }
+
+    public Catalog retrieveCatalogForPath(String path) throws CvmfsException {
+        var catalog = retrieveCurrentRootCatalog();
         try {
-            History history = retrieveHistory();
-            RevisionTag rt = history.getTagByName(tagName);
-            return new Revision(this, rt);
-        } catch (HistoryNotFoundException | SQLException e) {
-            e.printStackTrace();
+            while (true) {
+                var nested = catalog.findNestedForPath(path);
+                if (nested.isEmpty()) break;
+                catalog = retrieveCatalog(nested.get().catalogHash());
+            }
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to navigate catalogs", e);
         }
-        return null;
+        return catalog;
     }
 
-    public Revision getRevision(int revisionNumber) {
+    public History retrieveHistory() throws CvmfsException {
+        if (!hasHistory()) throw new CvmfsException("Repository has no history");
         try {
-            History history = retrieveHistory();
-            RevisionTag rt = history.getTagByRevision(revisionNumber);
-            return new Revision(this, rt);
-        } catch (HistoryNotFoundException | SQLException e) {
-            e.printStackTrace();
+            var file = retrieveObject(manifest.historyDatabase(), "H");
+            return new History(file.toFile());
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to open history database", e);
         }
-        return null;
     }
 
-    public Revision getCurrentRevision() {
-        return getRevision(manifest.getRevision());
+    public CatalogStatistics getStatistics() throws CvmfsException {
+        try {
+            var catalog = retrieveCurrentRootCatalog();
+            return catalog.getStatistics();
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to get statistics", e);
+        }
     }
 
-    public Map<String, Catalog> getOpenedCatalogs() {
-        return openedCatalogs;
+    public List<DirectoryEntry> listDirectory(String path) throws CvmfsException {
+        var entry = lookup(path);
+        if (!entry.isDirectory()) throw new CvmfsException("Not a directory: " + path);
+        try {
+            var catalog = retrieveCatalogForPath(path);
+            return catalog.listDirectory(path);
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to list directory: " + path, e);
+        }
+    }
+
+    public DirectoryEntry lookup(String path) throws CvmfsException {
+        var lookupPath = "/".equals(path) ? "" : path;
+        try {
+            var catalog = retrieveCatalogForPath(lookupPath);
+            return catalog.findDirectoryEntry(lookupPath)
+                    .orElseThrow(() -> new CvmfsException("Path not found: " + path));
+        } catch (SQLException e) {
+            throw new CvmfsException("Failed to lookup: " + path, e);
+        }
+    }
+
+    public Path getFile(String path) throws CvmfsException {
+        var entry = lookup(path);
+        if (!entry.isFile()) throw new CvmfsException("Not a file: " + path);
+        var hash = entry.contentHashString()
+                .orElseThrow(() -> new CvmfsException("No content hash for: " + path));
+        return retrieveObject(hash);
     }
 }

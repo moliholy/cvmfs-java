@@ -1,60 +1,131 @@
 # cvmfs-java
 
-A Java library for interacting with [CernVM-FS (CVMFS)](https://github.com/cvmfs/cvmfs), a scalable, reliable and low-maintenance software distribution service.
+[![Java CI](https://github.com/moliholy/cvmfs-java/actions/workflows/java.yml/badge.svg)](https://github.com/moliholy/cvmfs-java/actions/workflows/java.yml)
+[![codecov](https://codecov.io/gh/moliholy/cvmfs-java/graph/badge.svg)](https://codecov.io/gh/moliholy/cvmfs-java)
+[![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg)](LICENSE)
+
+A Java library for interacting with [CernVM-FS](https://cernvm.cern.ch/fs) repositories, a scalable, reliable, and low-maintenance software distribution service used in high-energy physics and scientific computing.
 
 ## Features
 
-- Read and verify CVMFS repositories.
-- Fetch and validate manifests, catalogs, certificates, and whitelists.
-- Access repository history and revisions.
-- Support for both HTTP and local file repositories.
+- **Repository access**: read and navigate CVMFS repositories over HTTP or local paths
+- **Manifest parsing**: parse and validate `.cvmfspublished` files with all standard fields
+- **Catalog traversal**: SQLite-backed catalog queries with nested catalog support
+- **Directory listing**: list files and directories at any path in the repository
+- **File retrieval**: download and decompress files from content-addressable storage
+- **Chunked files**: support for chunked file storage with hash verification
+- **History database**: access tagged revisions and repository history
+- **Signature verification**: X.509 certificate parsing and RSA signature verification
+- **Whitelist validation**: repository name matching and expiry checks
+- **Content hashing**: SHA-1, RIPEMD-160, SHA-256, and SHAKE-128 support
+- **Local caching**: two-level hex-prefix cache directory structure
+- **Modern Java**: built on Java 21 with records, sealed types, pattern matching, and `java.time`
 
-## Installation
+## Prerequisites
 
-Clone the repository and build with Maven:
+- Java 21+
+- Maven 3.9+
+
+## Quick start
 
 ```sh
-git clone https://github.com/yourusername/cvmfs-java.git
+git clone https://github.com/moliholy/cvmfs-java.git
 cd cvmfs-java
 mvn clean install
 ```
 
-## Usage
+## Library usage
 
 ```java
+import com.molina.cvmfs.fetcher.Fetcher;
 import com.molina.cvmfs.repository.Repository;
 
-public class Example {
-    public static void main(String[] args) throws Exception {
-        // Initialize repository from a source (URL or local path) and cache directory
-        Repository repo = new Repository("http://your.cvmfs.repo", "/tmp/cvmfs-cache");
+// Initialize
+var fetcher = new Fetcher("http://cvmfs-stratum-one.cern.ch/opt/boss", "/tmp/cvmfs-cache", true);
+var repo = new Repository(fetcher);
 
-        // Get repository name
-        System.out.println("Repository: " + repo.getFqrn());
+System.out.println("Repository: " + repo.fqrn());
+System.out.println("Revision: " + repo.getRevisionNumber());
 
-        // Verify repository signature
-        boolean valid = repo.verify("/path/to/public.pem");
-        System.out.println("Signature valid: " + valid);
-
-        // Access manifest and catalogs
-        System.out.println("Manifest revision: " + repo.getManifest().getRevision());
-    }
+// List directory
+for (var entry : repo.listDirectory("/")) {
+    System.out.println(entry.name() + (entry.isDirectory() ? "/" : ""));
 }
+
+// Look up a file
+var entry = repo.lookup("/testfile");
+System.out.println("Size: " + entry.size());
+
+// Read a file
+var path = repo.getFile("/testfile");
+var content = java.nio.file.Files.readString(path);
 ```
 
-## Project Structure
+### History and revisions
 
-- `com.molina.cvmfs.repository.Repository` – Main entry point for repository operations
-- `com.molina.cvmfs.catalog.Catalog` – Catalog file handling
-- `com.molina.cvmfs.manifest.Manifest` – Manifest file parsing and validation
-- `com.molina.cvmfs.certificate.Certificate` – Certificate management
-- `com.molina.cvmfs.whitelist.Whitelist` – Whitelist signature verification
+```java
+// Access history
+var history = repo.retrieveHistory();
+System.out.println("Schema: " + history.schema());
+
+// Get tag by name
+var tag = history.getTagByName("trunk");
+tag.ifPresent(t -> System.out.println("Trunk revision: " + t.revision()));
+
+// Browse a specific revision
+repo.setCurrentTag(293);
+var entries = repo.listDirectory("/");
+```
+
+### Catalog operations
+
+```java
+// Retrieve root catalog
+var catalog = repo.retrieveCurrentRootCatalog();
+System.out.println("Root: " + catalog.isRoot());
+System.out.println("Nested catalogs: " + catalog.nestedCount());
+
+// Statistics
+var stats = catalog.getStatistics();
+System.out.println("Files: " + stats.regular());
+System.out.println("Dirs: " + stats.dir());
+```
+
+## Development
+
+```sh
+make build              # Compile
+make test               # Run all tests
+make test-unit          # Unit tests only
+make test-integration   # Integration tests only
+make coverage           # Generate JaCoCo coverage report
+make check              # Build + all tests
+make clean              # Clean build artifacts
+make doc                # Generate Javadoc
+```
+
+## Project structure
+
+```
+src/main/java/com/molina/cvmfs/
+├── catalog/          Catalog database wrapper, nested catalogs, statistics
+├── certificate/      X.509 certificate parsing and verification
+├── common/           Shared utilities, exceptions, database abstraction
+├── directoryentry/   File/directory metadata, chunks, content hash types
+├── fetcher/          HTTP/file retrieval, local cache management
+├── history/          Repository history database, revision tags
+├── manifest/         .cvmfspublished parsing and validation
+├── repository/       Main entry point for repository operations
+├── revision/         Revision snapshots and iteration
+├── rootfile/         Base class for signed root files
+└── whitelist/        .cvmfswhitelist parsing and validation
+```
+
+## Related projects
+
+- [cvmfs-rust](https://github.com/moliholy/cvmfs-rust): Rust implementation with FUSE filesystem support
+- [CernVM-FS](https://github.com/cvmfs/cvmfs): the original C++ implementation
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- The original [CernVM-FS project](https://github.com/cvmfs/cvmfs).
-- All contributors and maintainers.
+This project is licensed under the [BSD 3-Clause License](LICENSE).

@@ -1,433 +1,202 @@
 package com.molina.cvmfs.catalog;
 
-import com.molina.cvmfs.catalog.exception.CatalogInitializationException;
 import com.molina.cvmfs.common.Common;
 import com.molina.cvmfs.common.DatabaseObject;
 import com.molina.cvmfs.common.PathHash;
-import com.molina.cvmfs.directoryentry.Chunk;
 import com.molina.cvmfs.directoryentry.DirectoryEntry;
 import com.molina.cvmfs.directoryentry.DirectoryEntryWrapper;
-import com.molina.cvmfs.directoryentry.exception.ChunkFileDoesNotMatch;
 
 import java.io.File;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.*;
 
-/**
- * @author Jose Molina Colmenero
- *         <p/>
- *         Wraps the basic functionality of CernVM-FS Catalogs
- */
 public class Catalog extends DatabaseObject implements Iterable<DirectoryEntryWrapper> {
 
     public static final String CATALOG_ROOT_PREFIX = "C";
-    protected static final String LISTING_QUERY = "SELECT " + DirectoryEntry.catalogDatabaseFields() +
-            " FROM catalog" +
-            " WHERE parent_1 = ? AND" +
-            " parent_2 = ?" +
-            " ORDER BY name ASC;";
-    protected static final String NESTED_COUNT = "SELECT count(*) FROM nested_catalogs;";
-    protected static final String READ_CHUNK = "SELECT " + Chunk.catalogDatabaseFields() +
+
+    private static final String LISTING_QUERY = "SELECT " + DirectoryEntry.catalogDatabaseFields() +
+            " FROM catalog WHERE parent_1 = ? AND parent_2 = ? ORDER BY name ASC";
+    private static final String NESTED_COUNT = "SELECT count(*) FROM nested_catalogs";
+    private static final String READ_CHUNK = "SELECT " + com.molina.cvmfs.directoryentry.Chunk.catalogDatabaseFields() +
             " FROM chunks WHERE md5path_1 = ? AND md5path_2 = ? ORDER BY offset ASC";
-    protected static final String FIND_MD5_PATH = "SELECT " + DirectoryEntry.catalogDatabaseFields() +
-            " FROM catalog WHERE md5path_1 = ? AND md5path_2 = ? LIMIT 1;";
-    protected float schema;
-    protected float schemaRevision;
-    protected int revision;
-    protected String hash;
-    protected Date lastModified;
-    protected String rootPrefix;
-    protected String previousRevision;
-    private PreparedStatement listStatement;
-    private PreparedStatement nestedCountStatement;
-    private PreparedStatement readChunkStatement;
-    private PreparedStatement findMd5PathStatement;
-    private PreparedStatement listNestedStatement;
+    private static final String FIND_MD5_PATH = "SELECT " + DirectoryEntry.catalogDatabaseFields() +
+            " FROM catalog WHERE md5path_1 = ? AND md5path_2 = ? LIMIT 1";
 
-    public Catalog(File databaseFile, String catalogHash)
-            throws SQLException, CatalogInitializationException {
+    private float schema;
+    private float schemaRevision;
+    private int revision;
+    private final String hash;
+    private long lastModified;
+    private String rootPrefix;
+    private String previousRevision;
+
+    private final PreparedStatement listStmt;
+    private final PreparedStatement nestedCountStmt;
+    private final PreparedStatement readChunkStmt;
+    private final PreparedStatement findMd5Stmt;
+    private final PreparedStatement listNestedStmt;
+
+    public Catalog(File databaseFile, String catalogHash) throws SQLException {
         super(databaseFile);
-        hash = catalogHash;
-        schemaRevision = 0;
+        this.hash = catalogHash;
         readProperties();
-        guessRootPrefixIfNeeded();
-        guessLastModifiedIfNeeded();
-        checkValidity();
-        prepareStatements();
+        if (rootPrefix == null) rootPrefix = "/";
+        if (lastModified == 0) lastModified = 0;
+
+        listStmt = createPreparedStatement(LISTING_QUERY);
+        nestedCountStmt = createPreparedStatement(NESTED_COUNT);
+        readChunkStmt = createPreparedStatement(READ_CHUNK);
+        findMd5Stmt = createPreparedStatement(FIND_MD5_PATH);
+        var nestedSql = (schema <= 1.2 && schemaRevision > 0)
+                ? "SELECT path, sha1, size FROM nested_catalogs"
+                : "SELECT path, sha1 FROM nested_catalogs";
+        listNestedStmt = createPreparedStatement(nestedSql);
     }
 
-    private void prepareStatements() throws SQLException {
-        listStatement = createPreparedStatement(LISTING_QUERY);
-        nestedCountStatement = createPreparedStatement(NESTED_COUNT);
-        readChunkStatement = createPreparedStatement(READ_CHUNK);
-        findMd5PathStatement = createPreparedStatement(FIND_MD5_PATH);
-        boolean newVersion = (schema <= 1.2 && schemaRevision > 0);
-        String sqlQuery;
-        if (newVersion) {
-            sqlQuery = "SELECT path, sha1, size FROM nested_catalogs";
-        } else {
-            sqlQuery = "SELECT path, sha1 FROM nested_catalogs";
-        }
-        listNestedStatement = createPreparedStatement(sqlQuery);
-    }
-
-    public float getSchema() {
-        return schema;
-    }
-
-    /**
-     * Check all crucial properties have been found in the database
-     */
-    protected void checkValidity() throws CatalogInitializationException {
-        if (revision == 0)
-            throw new CatalogInitializationException(
-                    "Catalog lacks a revision entry");
-        if (schema == 0.0f)
-            throw new CatalogInitializationException(
-                    "Catalog lacks a schema entry");
-        if (rootPrefix == null)
-            throw new CatalogInitializationException(
-                    "Catalog lacks a root prefix entry");
-        if (lastModified == null)
-            throw new CatalogInitializationException(
-                    "Catalog lacks a last modification entry");
-    }
-
-    /**
-     * Catalogs w/o a last_modified field, we set it to 0
-     */
-    protected void guessLastModifiedIfNeeded() {
-        if (lastModified == null)
-            lastModified = new Date(0);
-    }
-
-    /**
-     * Root catalogs don't have a root prefix property
-     */
-    protected void guessRootPrefixIfNeeded() {
-        if (rootPrefix == null)
-            rootPrefix = File.separator;
-    }
-
-    /**
-     * Detect catalog properties and store them
-     */
-    protected void readProperties() throws SQLException {
-        Map<String, Object> map = readPropertiesTable();
-        for (String key : map.keySet()) {
-            readProperty(key, map.get(key));
-        }
-    }
-
-    public float getSchemaRevision() {
-        return schemaRevision;
-    }
-
-    public int getRevision() {
-        return revision;
-    }
-
-    public String getHash() {
-        return hash;
-    }
-
-    public Date getLastModified() {
-        return lastModified;
-    }
-
-    public String getRootPrefix() {
-        return rootPrefix;
-    }
-
-    public String getPreviousRevision() {
-        return previousRevision;
-    }
-
-    protected void readProperty(String key, Object value) {
-        if (key.equals("revision"))
-            revision = Integer.valueOf((String) value);
-        else if (key.equals("schema"))
-            schema = Float.valueOf((String) value);
-        else if (key.equals("schema_revision"))
-            schemaRevision = Float.valueOf((String) value);
-        else if (key.equals("last_modified")) {
-            Long valueLong = Long.valueOf((String) value);
-            lastModified = new Date(valueLong);
-        } else if (key.equals("previous_revision"))
-            previousRevision = (String) value;
-
-        else if (key.equals("root_prefix"))
-            rootPrefix = (String) value;
-    }
-
-    public boolean hasNested() {
-        return nestedCount() > 0;
-    }
-
-    public boolean isRoot() {
-        return rootPrefix.equals(File.separator);
-    }
-
-    /**
-     * Returns the number of nested catalogs in the catalog
-     *
-     * @return the number of nested catalogs in this catalog
-     */
-    public int nestedCount() {
-        ResultSet rs = null;
-        int numCatalogs = 0;
-        try {
-            rs = nestedCountStatement.executeQuery();
-            if (rs.next())
-                numCatalogs = rs.getInt(1);
-        } catch (SQLException e) {
-            return 0;
-        } finally {
-            if (rs != null) {
-                try {
-                    rs.close();
-                } catch (SQLException e) {
-                    e.printStackTrace();
-                }
+    private void readProperties() throws SQLException {
+        var props = readPropertiesTable();
+        props.forEach((key, value) -> {
+            switch (key) {
+                case "revision" -> revision = Integer.parseInt(value);
+                case "schema" -> schema = Float.parseFloat(value);
+                case "schema_revision" -> schemaRevision = Float.parseFloat(value);
+                case "last_modified" -> lastModified = Long.parseLong(value);
+                case "previous_revision" -> previousRevision = value;
+                case "root_prefix" -> rootPrefix = value;
+                default -> {}
             }
-        }
-        return numCatalogs;
+        });
     }
 
-    /**
-     * List CatalogReferences to all contained nested catalogs
-     *
-     * @return array of CatalogReference containing all nested catalogs in this catalog
-     */
-    public CatalogReference[] listNested() {
-        boolean newVersion = (schema <= 1.2 && schemaRevision > 0);
-        ResultSet rs = null;
-        ArrayList<CatalogReference> arr = new ArrayList<>();
-        try {
-            rs = listNestedStatement.executeQuery();
+    public float schema() { return schema; }
+    public float schemaRevision() { return schemaRevision; }
+    public int revision() { return revision; }
+    public String hash() { return hash; }
+    public long lastModified() { return lastModified; }
+    public String rootPrefix() { return rootPrefix; }
+    public String previousRevision() { return previousRevision; }
+
+    public boolean isRoot() { return "/".equals(rootPrefix); }
+
+    public boolean hasNested() throws SQLException { return nestedCount() > 0; }
+
+    public int nestedCount() throws SQLException {
+        try (var rs = nestedCountStmt.executeQuery()) {
+            return rs.next() ? rs.getInt(1) : 0;
+        }
+    }
+
+    public List<CatalogReference> listNested() throws SQLException {
+        boolean newVersion = schema <= 1.2 && schemaRevision > 0;
+        var result = new ArrayList<CatalogReference>();
+        try (var rs = listNestedStmt.executeQuery()) {
             while (rs.next()) {
-                String path = rs.getString(1);
-                String sha1 = rs.getString(2);
-                int size = 0;
-                if (newVersion)
-                    size = rs.getInt(3);
-                arr.add(new CatalogReference(path, sha1, size));
-            }
-        } catch (SQLException e) {
-            return new CatalogReference[0];
-        } finally {
-            if (rs != null) {
-                try {
-                    rs.close();
-                } catch (SQLException e) {
-                    e.printStackTrace();
-                }
+                var path = rs.getString(1);
+                var sha1 = rs.getString(2);
+                int size = newVersion ? rs.getInt(3) : 0;
+                result.add(new CatalogReference(path, sha1, size));
             }
         }
-        return arr.toArray(new CatalogReference[arr.size()]);
+        return result;
     }
 
-    public CatalogStatistics getStatistics() {
-        try {
-            return new CatalogStatistics(this);
-        } catch (SQLException e) {
-            return null;
-        }
+    public CatalogStatistics getStatistics() throws SQLException {
+        return new CatalogStatistics(this);
     }
 
     private boolean pathSanitized(String needlePath, String catalogPath) {
         return needlePath.length() == catalogPath.length() ||
                 (needlePath.length() > catalogPath.length() &&
-                needlePath.charAt(catalogPath.length()) == File.separatorChar);
+                        needlePath.charAt(catalogPath.length()) == '/');
     }
 
-    /**
-     * Find the best matching nested CatalogReference for a given path
-     *
-     * @param needlePath path to search in the catalog
-     * @return The catalogs that best matches the given path
-     */
-    public CatalogReference findNestedForPath(String needlePath) {
-        CatalogReference[] catalogRefs = listNested();
+    public Optional<CatalogReference> findNestedForPath(String needlePath) throws SQLException {
+        var refs = listNested();
         CatalogReference bestMatch = null;
-        int bestMatchScore = 0;
-        String realNeedlePath = Common.canonicalizePath(needlePath);
-        for (CatalogReference nestedCatalog : catalogRefs) {
-            if (realNeedlePath.startsWith(nestedCatalog.getRootPath()) &&
-                    nestedCatalog.getRootPath().length() > bestMatchScore &&
-                    pathSanitized(needlePath, nestedCatalog.getRootPath())) {
-                bestMatchScore = nestedCatalog.getRootPath().length();
-                bestMatch = nestedCatalog;
+        int bestScore = 0;
+        var normalizedPath = Common.canonicalizePath(needlePath);
+        for (var ref : refs) {
+            if (normalizedPath.startsWith(ref.rootPath()) &&
+                    ref.rootPath().length() > bestScore &&
+                    pathSanitized(needlePath, ref.rootPath())) {
+                bestScore = ref.rootPath().length();
+                bestMatch = ref;
             }
         }
-        return bestMatch;
+        return Optional.ofNullable(bestMatch);
     }
 
-    /**
-     * Create a directory listing of the given directory path
-     *
-     * @param path path to be listed
-     * @return a list with all the DirectoryEntries contained in that path
-     */
-    public List<DirectoryEntry> listDirectory(String path) {
-        String realPath = Common.canonicalizePath(path);
-        if (realPath.equals(File.separator))
-            realPath = "";
+    public List<DirectoryEntry> listDirectory(String path) throws SQLException {
+        var realPath = Common.canonicalizePath(path);
+        if ("/".equals(realPath)) realPath = "";
         try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            PathHash parentHash = Common.splitMd5(md.digest(realPath.getBytes()));
-            return listDirectorySplitMd5(parentHash.getHash1(),
-                    parentHash.getHash2());
-        } catch (NoSuchAlgorithmException | SQLException e) {
-            return new ArrayList<>();
+            var md = MessageDigest.getInstance("MD5");
+            var hash = Common.splitMd5(md.digest(realPath.getBytes(StandardCharsets.UTF_8)));
+            return listDirectorySplitMd5(hash.hash1(), hash.hash2());
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("MD5 not available", e);
         }
     }
 
-    @Override
-    public boolean open() {
-        boolean result = super.open();
-        try {
-            readProperties();
-            guessRootPrefixIfNeeded();
-            guessLastModifiedIfNeeded();
-            checkValidity();
-            prepareStatements();
-        } catch (SQLException e) {
-            result = false;
-        } catch (CatalogInitializationException e) {
-            e.printStackTrace();
-            result = false;
+    public List<DirectoryEntry> listDirectorySplitMd5(long parent1, long parent2) throws SQLException {
+        listStmt.setLong(1, parent1);
+        listStmt.setLong(2, parent2);
+        var result = new ArrayList<DirectoryEntry>();
+        try (var rs = listStmt.executeQuery()) {
+            while (rs.next()) {
+                var entry = new DirectoryEntry(rs);
+                readChunks(entry);
+                result.add(entry);
+            }
         }
         return result;
     }
 
-    @Override
-    public boolean close() {
-        boolean result = true;
+    private void readChunks(DirectoryEntry entry) throws SQLException {
+        if (schema < 2.4) return;
+        readChunkStmt.setLong(1, entry.md5path1());
+        readChunkStmt.setLong(2, entry.md5path2());
+        try (var rs = readChunkStmt.executeQuery()) {
+            entry.addChunks(rs);
+        }
+    }
+
+    public Optional<DirectoryEntry> findDirectoryEntry(String rootPath) throws SQLException {
+        var realPath = Common.canonicalizePath(rootPath);
         try {
-            findMd5PathStatement.close();
-            listNestedStatement.close();
-            listStatement.close();
-            nestedCountStatement.close();
-            readChunkStatement.close();
-        } catch (SQLException e) {
-            e.printStackTrace();
-            result = false;
-        }
-        return result && super.close();
-    }
-
-    /**
-     * Create a directory listing of DirectoryEntry items based on MD5 path
-     *
-     * @param parent1 first part of the parent MD5 hash
-     * @param parent2 second part of the parent MD5 hash
-     */
-    public List<DirectoryEntry> listDirectorySplitMd5(long parent1, long parent2)
-            throws SQLException {
-        listStatement.setLong(1, parent1);
-        listStatement.setLong(2, parent2);
-        ResultSet rs = listStatement.executeQuery();
-        ArrayList<DirectoryEntry> arr = new ArrayList<>();
-        while (rs.next()) {
-            arr.add(makeDirectoryEntry(rs));
-        }
-        rs.close();
-        return arr;
-    }
-
-    private DirectoryEntry makeDirectoryEntry(ResultSet rs)
-            throws SQLException {
-        if (rs != null && !rs.isClosed()) {
-            DirectoryEntry dirent = new DirectoryEntry(rs);
-            readChunks(dirent);
-            return dirent;
-        }
-        return null;
-    }
-
-    /**
-     * Finds and adds the file chunk of a DirectoryEntry
-     *
-     * @param dirent DirectoryEntry that contains chunks
-     */
-    private void readChunks(DirectoryEntry dirent) throws SQLException {
-        if (schema < 2.4)
-            return;
-        readChunkStatement.setLong(1, dirent.getMd5path_1());
-        readChunkStatement.setLong(2, dirent.getMd5path_2());
-        ResultSet rs = readChunkStatement.executeQuery();
-        try {
-            dirent.addChunks(rs);
-        } catch (ChunkFileDoesNotMatch e) {
-            e.printStackTrace();
-        }
-        rs.close();
-    }
-
-    /**
-     * Finds the DirectoryEntry for a given path
-     *
-     * @param rootPath relative path of the DirectoryEntry to find
-     * @return the DirectoryEntry that corresponds to path, or null if not found
-     */
-    public DirectoryEntry findDirectoryEntry(String rootPath) {
-        String realPath = Common.canonicalizePath(rootPath);
-        try {
-            MessageDigest md = MessageDigest.getInstance("MD5");
-            byte[] md5Path = md.digest(realPath.getBytes());
-            return findDirectoryEntryMd5(md5Path);
-        } catch (NoSuchAlgorithmException e) {
-            e.printStackTrace();
-        }
-        return null;
-    }
-
-    /**
-     * Finds a DirectoryEntry for a given Md5 hashed path
-     *
-     * @param md5Path md5 path of the DirectoryEntry to find
-     * @return the DirectoryEntry that corresponds to md5Path, or null if not found
-     */
-    private DirectoryEntry findDirectoryEntryMd5(byte[] md5Path) {
-        PathHash pathHash = Common.splitMd5(md5Path);
-        return findDirectoryEntrySplitMd5(pathHash);
-    }
-
-    /**
-     * Finds the DirectoryEntry for the given splitMd5 hashed path
-     *
-     * @param pathHash split md5 hashed path of the DirectoryEntry to find
-     * @return the DirectoryEntry that corresponds to pathHash, or null if not found
-     */
-    private DirectoryEntry findDirectoryEntrySplitMd5(PathHash pathHash) {
-        ResultSet rs = null;
-        try {
-            findMd5PathStatement.setLong(1, pathHash.getHash1());
-            findMd5PathStatement.setLong(2, pathHash.getHash2());
-            rs = findMd5PathStatement.executeQuery();
-            rs.next();
-            return makeDirectoryEntry(rs);
-        } catch (SQLException e) {
-            e.printStackTrace();
-        } finally {
-            if (rs != null) {
-                try {
-                    rs.close();
-                } catch (SQLException e) {
-                    e.printStackTrace();
+            var md = MessageDigest.getInstance("MD5");
+            var pathHash = Common.splitMd5(md.digest(realPath.getBytes(StandardCharsets.UTF_8)));
+            findMd5Stmt.setLong(1, pathHash.hash1());
+            findMd5Stmt.setLong(2, pathHash.hash2());
+            try (var rs = findMd5Stmt.executeQuery()) {
+                if (rs.next()) {
+                    var entry = new DirectoryEntry(rs);
+                    readChunks(entry);
+                    return Optional.of(entry);
                 }
             }
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("MD5 not available", e);
         }
-        return null;
+        return Optional.empty();
     }
 
+    @Override
     public Iterator<DirectoryEntryWrapper> iterator() {
         return new CatalogIterator(this);
     }
 
+    @Override
+    public void close() {
+        try { listStmt.close(); } catch (SQLException ignored) {}
+        try { nestedCountStmt.close(); } catch (SQLException ignored) {}
+        try { readChunkStmt.close(); } catch (SQLException ignored) {}
+        try { findMd5Stmt.close(); } catch (SQLException ignored) {}
+        try { listNestedStmt.close(); } catch (SQLException ignored) {}
+        super.close();
+    }
 }

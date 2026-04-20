@@ -2,181 +2,133 @@ package com.molina.cvmfs.directoryentry;
 
 import com.molina.cvmfs.common.Common;
 import com.molina.cvmfs.common.PathHash;
-import com.molina.cvmfs.directoryentry.exception.ChunkFileDoesNotMatch;
-import com.molina.cvmfs.directoryentry.exception.DirectoryEntryInvalidObject;
-import com.molina.cvmfs.repository.Repository;
-import com.molina.cvmfs.repository.exception.FileNotFoundInRepositoryException;
 
-import java.io.File;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
 
-/**
- * @author Jose Molina Colmenero
- *         <p/>
- *         Wrapper around a DirectoryEntry as it is saved in the Catalogs
- */
 public class DirectoryEntry {
+    private final long md5path1;
+    private final long md5path2;
+    private final long parent1;
+    private final long parent2;
+    private final String contentHash;
+    private final int flags;
+    private final long size;
+    private final int mode;
+    private final long mtime;
+    private final String name;
+    private final String symlink;
+    private final int uid;
+    private final int gid;
+    private final long hardlinks;
+    private final ContentHashTypes contentHashType;
+    private final List<Chunk> chunks;
 
-    protected long md5path_1;
-    protected long md5path_2;
-    protected long parent_1;
-    protected long parent_2;
-    protected String contentHash;
-    protected int flags;
-    protected int size;
-    protected int mode;
-    protected long mtime;
-    protected String name;
-    protected String symlink;
-    protected ArrayList<Chunk> chunks;
-    protected int contentHashType;
+    public DirectoryEntry(ResultSet rs) throws SQLException {
+        this.chunks = new ArrayList<>();
+        this.md5path1 = rs.getLong("md5path_1");
+        this.md5path2 = rs.getLong("md5path_2");
+        this.parent1 = rs.getLong("parent_1");
+        this.parent2 = rs.getLong("parent_2");
+        byte[] hashBytes = rs.getBytes("hash");
+        this.contentHash = hashBytes != null ? Common.toHex(hashBytes) : null;
+        this.flags = rs.getInt("flags");
+        this.size = rs.getLong("size");
+        this.mode = rs.getInt("mode");
+        this.mtime = rs.getLong("mtime");
+        this.name = rs.getString("name");
+        this.symlink = rs.getString("symlink");
+        // uid/gid may not exist in older schemas
+        int tmpUid = 0, tmpGid = 0;
+        try { tmpUid = rs.getInt("uid"); } catch (SQLException ignored) {}
+        try { tmpGid = rs.getInt("gid"); } catch (SQLException ignored) {}
+        this.uid = tmpUid;
+        this.gid = tmpGid;
+        long tmpHardlinks = 1;
+        try { tmpHardlinks = rs.getLong("hardlinks"); } catch (SQLException ignored) {}
+        this.hardlinks = tmpHardlinks;
+        this.contentHashType = readContentHashType(flags);
+    }
 
-    public DirectoryEntry(ResultSet resultSet) throws SQLException {
-        // see DirectoryEntry.catalogDatabaseFields()
-        chunks = new ArrayList<>();
-        md5path_1 = resultSet.getLong("md5path_1");
-        md5path_2 = resultSet.getLong("md5path_2");
-        parent_1 = resultSet.getLong("parent_1");
-        parent_2 = resultSet.getLong("parent_2");
-        byte[] hashBytes = resultSet.getBytes("hash");
-        if (hashBytes != null) {
-            contentHash = Common.binaryBufferToHexString(hashBytes);
-        }
-        flags = resultSet.getInt("flags");
-        size = resultSet.getInt("size");
-        mode = resultSet.getInt("mode");
-        mtime = resultSet.getLong("mtime");
-        name = resultSet.getString("name");
-        symlink = resultSet.getString("symlink");
-        readContentHashType();
+    // Package-private constructor for testing
+    DirectoryEntry(long md5path1, long md5path2, long parent1, long parent2,
+                   String contentHash, int flags, long size, int mode, long mtime,
+                   String name, String symlink, int uid, int gid, long hardlinks,
+                   List<Chunk> chunks) {
+        this.md5path1 = md5path1;
+        this.md5path2 = md5path2;
+        this.parent1 = parent1;
+        this.parent2 = parent2;
+        this.contentHash = contentHash;
+        this.flags = flags;
+        this.size = size;
+        this.mode = mode;
+        this.mtime = mtime;
+        this.name = name;
+        this.symlink = symlink;
+        this.uid = uid;
+        this.gid = gid;
+        this.hardlinks = hardlinks;
+        this.contentHashType = readContentHashType(flags);
+        this.chunks = chunks != null ? new ArrayList<>(chunks) : new ArrayList<>();
     }
 
     public static String catalogDatabaseFields() {
-        // see the constructor of this class
         return "md5path_1, md5path_2, parent_1, parent_2, hash, flags, " +
                 "size, mode, mtime, name, symlink";
     }
 
-    public File retrieveFrom(Repository repository)
-            throws DirectoryEntryInvalidObject, FileNotFoundInRepositoryException {
-        if (isSymplink() || isDirectory())
-            throw new DirectoryEntryInvalidObject();
-        return repository.retrieveObject(contentHashString());
+    static ContentHashTypes readContentHashType(int flags) {
+        int hashBits = (flags & Flags.CONTENT_HASH_TYPE) >> 8;
+        return ContentHashTypes.fromValue(hashBits + 1);
     }
 
-    public boolean isDirectory() {
-        return (flags & Flags.DIRECTORY) > 0;
+    public boolean isDirectory() { return (flags & Flags.DIRECTORY) != 0; }
+    public boolean isNestedCatalogMountpoint() { return (flags & Flags.NESTED_CATALOG_MOUNTPOINT) != 0; }
+    public boolean isNestedCatalogRoot() { return (flags & Flags.NESTED_CATALOG_ROOT) != 0; }
+    public boolean isFile() { return (flags & Flags.FILE) != 0; }
+    public boolean isSymlink() { return (flags & Flags.LINK) != 0; }
+    public boolean isExternalFile() { return (flags & Flags.EXTERNAL_FILE) != 0; }
+    public boolean hasChunks() { return contentHash == null; }
+
+    public PathHash pathHash() { return new PathHash(md5path1, md5path2); }
+    public PathHash parentHash() { return new PathHash(parent1, parent2); }
+
+    public Optional<String> contentHashString() {
+        if (contentHash == null) return Optional.empty();
+        return Optional.of(contentHash + contentHashType.suffix());
     }
 
-    public boolean isNestedCatalogMountpoint() {
-        return (flags & Flags.NESTED_CATALOG_MOUNTPOINT) > 0;
-    }
+    public long nlink() { return hardlinks & 0xFFFFFFFFL; }
+    public long hardlinkGroup() { return hardlinks >> 32; }
 
-    public boolean isNestedCatalogRoot() {
-        return (flags & Flags.NESTED_cATALOG_ROOT) > 0;
-    }
-
-    public boolean isFile() {
-        return (flags & Flags.FILE) > 0;
-    }
-
-    public boolean isSymplink() {
-        return (flags & Flags.LINK) > 0;
-    }
-
-    public PathHash pathHash() {
-        return new PathHash(md5path_1, md5path_2);
-    }
-
-    public PathHash parentHash() {
-        return new PathHash(parent_1, parent_2);
-    }
-
-    public String contentHashString() {
-        String suffix = ContentHashTypes.toSuffix(contentHashType);
-        return contentHash + suffix;
-    }
-
-    public boolean hasChunks() {
-        return !chunks.isEmpty();
-    }
-
-    public void addChunks(ResultSet resultSet)
-            throws SQLException, ChunkFileDoesNotMatch {
+    public void addChunks(ResultSet rs) throws SQLException {
         chunks.clear();
-        while (resultSet.next()) {
-            Object[] chunkData = new Object[5];
-            for (int i = 0; i < chunkData.length; i++)
-                chunkData[i] = resultSet.getObject(i + 1);
-            chunks.add(new Chunk(chunkData, contentHashType));
+        while (rs.next()) {
+            int offset = rs.getInt("offset");
+            int chunkSize = rs.getInt("size");
+            byte[] hash = rs.getBytes("hash");
+            chunks.add(new Chunk(offset, chunkSize, hash != null ? hash : new byte[0], contentHashType));
         }
     }
 
-    protected void readContentHashType() {
-        int bitMask = Flags.CONTENT_HASH_TYPE;
-        int rightShifts = 0;
-        while ((bitMask & 1) == 0) {
-            bitMask = bitMask >> 1;
-            rightShifts += 1;
-        }
-        int hashType = ((flags & Flags.CONTENT_HASH_TYPE) >> rightShifts) + 1;
-        if (hashType > 0 && hashType < ContentHashTypes.UPPPER_BOUND)
-            contentHashType = hashType;
-        else
-            contentHashType = ContentHashTypes.UNKNOWN;
-    }
-
-    public long getMd5path_1() {
-        return md5path_1;
-    }
-
-    public long getMd5path_2() {
-        return md5path_2;
-    }
-
-    public long getParent_1() {
-        return parent_1;
-    }
-
-    public long getParent_2() {
-        return parent_2;
-    }
-
-    public String getContentHash() {
-        return contentHash;
-    }
-
-    public int getFlags() {
-        return flags;
-    }
-
-    public int getSize() {
-        return size;
-    }
-
-    public int getMode() {
-        return mode;
-    }
-
-    public long getMtime() {
-        return mtime;
-    }
-
-    public String getName() {
-        return name;
-    }
-
-    public String getSymlink() {
-        return symlink;
-    }
-
-    public ArrayList<Chunk> getChunks() {
-        return chunks;
-    }
-
-    public int getContentHashType() {
-        return contentHashType;
-    }
+    public long md5path1() { return md5path1; }
+    public long md5path2() { return md5path2; }
+    public long parent1() { return parent1; }
+    public long parent2() { return parent2; }
+    public String contentHash() { return contentHash; }
+    public int flags() { return flags; }
+    public long size() { return size; }
+    public int mode() { return mode; }
+    public long mtime() { return mtime; }
+    public String name() { return name; }
+    public String symlink() { return symlink; }
+    public int uid() { return uid; }
+    public int gid() { return gid; }
+    public long hardlinks() { return hardlinks; }
+    public ContentHashTypes contentHashType() { return contentHashType; }
+    public List<Chunk> chunks() { return chunks; }
 }

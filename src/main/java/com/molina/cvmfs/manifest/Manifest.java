@@ -1,182 +1,87 @@
 package com.molina.cvmfs.manifest;
 
 import com.molina.cvmfs.certificate.Certificate;
-import com.molina.cvmfs.manifest.exception.ManifestValidityError;
-import com.molina.cvmfs.manifest.exception.UnknownManifestField;
+import com.molina.cvmfs.common.CvmfsException;
 import com.molina.cvmfs.rootfile.RootFile;
-import com.molina.cvmfs.rootfile.exception.RootFileException;
 
 import java.io.File;
 import java.io.IOException;
-import java.io.UnsupportedEncodingException;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
-import java.security.SignatureException;
-import java.util.Date;
+import java.time.Instant;
 
-/**
- * @author Jose Molina Colmenero
- *         <p/>
- *         Wraps information from .cvmfspublished
- */
 public class Manifest extends RootFile {
+    private String rootCatalog;
+    private String rootHash;
+    private long rootCatalogSize;
+    private String certificate;
+    private String historyDatabase;
+    private Instant lastModified;
+    private int ttl;
+    private int revision;
+    private String repositoryName;
+    private String microCatalog;
+    private boolean garbageCollectable;
+    private boolean allowsAlternativeName;
 
-    protected String rootCatalog;
-    protected String rootHash;
-    protected int rootCatalogSize;
-    protected String certificate;
-    protected String historyDatabase;
-    protected Date lastModified;
-    protected int ttl;
-    protected int revision;
-    protected String repositoryName;
-    protected String microCatalog;
-    protected boolean garbageCollectable;
-    protected boolean allowsAlternativeName;
-
-    public Manifest(File fileObject) throws RootFileException, IOException {
-        super(fileObject);
+    public Manifest(File file) throws IOException, CvmfsException {
+        super(file);
     }
 
-    public static Manifest open(String manifestPath)
-            throws RootFileException, IOException {
-        return new Manifest(new File(manifestPath));
+    public Manifest(RootFile rootFile) throws CvmfsException {
+        super(rootFile);
     }
 
     public boolean hasHistory() {
         return historyDatabase != null;
     }
 
-    protected boolean verifySignature(Certificate certificate) throws UnsupportedEncodingException, NoSuchAlgorithmException, InvalidKeyException, SignatureException {
-        return certificate.verify(signature, signatureChecksum);
-    }
-
-    /**
-     * Parse lines that appear in .cvmfspublished
-     *
-     * @param line line of .cvmfspublished
-     */
     @Override
-    protected void readLine(String line) throws UnknownManifestField {
+    protected void readLine(String line) {
         char key = line.charAt(0);
-        String data = line.substring(1);
+        var data = line.substring(1);
         switch (key) {
-            case 'C':
-                rootCatalog = data;
-                break;
-            case 'R':
-                rootHash = data;
-                break;
-            case 'B':
-                rootCatalogSize = Integer.parseInt(data);
-                break;
-            case 'X':
-                certificate = data;
-                break;
-            case 'H':
-                historyDatabase = data;
-                break;
-            case 'T':
-                lastModified = new Date(Long.parseLong(data));
-                break;
-            case 'D':
-                ttl = Integer.parseInt(data);
-                break;
-            case 'S':
-                revision = Integer.parseInt(data);
-                break;
-            case 'N':
-                repositoryName = data;
-                break;
-            case 'L':
-                microCatalog = data;
-                break;
-            case 'G':
-                garbageCollectable = data.equals("yes");
-                break;
-            case 'A':
-                allowsAlternativeName = data.equals("yes");
-                break;
-            default:
-                throw new UnknownManifestField(key);
+            case 'C' -> rootCatalog = data;
+            case 'R' -> rootHash = data;
+            case 'B' -> rootCatalogSize = Long.parseLong(data);
+            case 'X' -> certificate = data;
+            case 'H' -> historyDatabase = data;
+            case 'T' -> lastModified = Instant.ofEpochSecond(Long.parseLong(data));
+            case 'D' -> ttl = Integer.parseInt(data);
+            case 'S' -> revision = Integer.parseInt(data);
+            case 'N' -> repositoryName = data;
+            case 'L', 'Y' -> microCatalog = data;
+            case 'G' -> garbageCollectable = parseBoolean(data);
+            case 'A' -> allowsAlternativeName = parseBoolean(data);
+            default -> {} // ignore unknown fields
         }
     }
 
-    /**
-     * Checks that all mandatory fields are found in .cvmfspublished
-     */
-    @Override
-    protected void checkValidity() throws ManifestValidityError {
-        if (rootCatalog == null)
-            throw new ManifestValidityError(
-                    "Manifest lacks a root catalog entry");
-        if (rootHash == null)
-            throw new ManifestValidityError("Manifest lacks a root hash entry");
-        if (ttl == 0)
-            throw new ManifestValidityError("Manifest lacks a TTL entry");
-        if (revision == 0)
-            throw new ManifestValidityError("Manifest lacks a revision entry");
-        if (repositoryName == null)
-            throw new ManifestValidityError("Manifest lacks a repository name");
+    static boolean parseBoolean(String value) {
+        return "yes".equals(value);
     }
 
     @Override
-    protected boolean verifySignatureFromEntity(Object publicEntity) {
-        if (publicEntity instanceof Certificate) {
-            try {
-                return ((Certificate) publicEntity).verify(signature, signatureChecksum);
-            } catch (NoSuchAlgorithmException | UnsupportedEncodingException | SignatureException | InvalidKeyException e) {
-                e.printStackTrace();
-            }
-        }
-        return false;
+    protected void checkValidity() throws CvmfsException {
+        if (rootCatalog == null) throw new CvmfsException("Manifest lacks a root catalog entry");
+        if (rootHash == null) throw new CvmfsException("Manifest lacks a root hash entry");
+        if (ttl == 0) throw new CvmfsException("Manifest lacks a TTL entry");
+        if (revision == 0) throw new CvmfsException("Manifest lacks a revision entry");
+        if (repositoryName == null) throw new CvmfsException("Manifest lacks a repository name");
     }
 
-    public String getRootCatalog() {
-        return rootCatalog;
+    public boolean verifySignature(Certificate cert) {
+        return cert.verify(signature, signatureChecksum);
     }
 
-    public String getRootHash() {
-        return rootHash;
-    }
-
-    public int getRootCatalogSize() {
-        return rootCatalogSize;
-    }
-
-    public String getCertificate() {
-        return certificate;
-    }
-
-    public String getHistoryDatabase() {
-        return historyDatabase;
-    }
-
-    public Date getLastModified() {
-        return lastModified;
-    }
-
-    public int getTTL() {
-        return ttl;
-    }
-
-    public int getRevision() {
-        return revision;
-    }
-
-    public String getRepositoryName() {
-        return repositoryName;
-    }
-
-    public String getMicroCatalog() {
-        return microCatalog;
-    }
-
-    public boolean isGarbageCollectable() {
-        return garbageCollectable;
-    }
-
-    public boolean allowsAlternativeName() {
-        return allowsAlternativeName;
-    }
+    public String rootCatalog() { return rootCatalog; }
+    public String rootHash() { return rootHash; }
+    public long rootCatalogSize() { return rootCatalogSize; }
+    public String certificate() { return certificate; }
+    public String historyDatabase() { return historyDatabase; }
+    public Instant lastModified() { return lastModified != null ? lastModified : Instant.EPOCH; }
+    public int ttl() { return ttl; }
+    public int revision() { return revision; }
+    public String repositoryName() { return repositoryName; }
+    public String microCatalog() { return microCatalog != null ? microCatalog : ""; }
+    public boolean garbageCollectable() { return garbageCollectable; }
+    public boolean allowsAlternativeName() { return allowsAlternativeName; }
 }

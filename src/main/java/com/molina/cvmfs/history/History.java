@@ -3,83 +3,75 @@ package com.molina.cvmfs.history;
 import com.molina.cvmfs.common.DatabaseObject;
 
 import java.io.File;
-import java.sql.ResultSet;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 
-/**
- * Wrapper around CernVM-FS 2.1.x repository history databases
- *
- * @author Jose Molina Colmenero
- */
 public class History extends DatabaseObject {
+    private static final String FIELDS = "name, hash, revision, timestamp, channel, description";
 
-    private String schema;
-    private String fqrn;
+    private final String schema;
+    private final String fqrn;
+    private final PreparedStatement byNameStmt;
+    private final PreparedStatement byRevisionStmt;
+    private final PreparedStatement byDateStmt;
 
-    public History(File databaseFile) throws IllegalStateException, SQLException {
+    public History(File databaseFile) throws SQLException {
         super(databaseFile);
-        readProperties();
+        var props = readPropertiesTable();
+        schema = props.getOrDefault("schema", "1.0");
+        fqrn = props.get("fqrn");
+
+        byNameStmt = createPreparedStatement(
+                "SELECT " + FIELDS + " FROM tags WHERE name = ? LIMIT 1");
+        byRevisionStmt = createPreparedStatement(
+                "SELECT " + FIELDS + " FROM tags WHERE revision = ? LIMIT 1");
+        byDateStmt = createPreparedStatement(
+                "SELECT " + FIELDS + " FROM tags WHERE timestamp > ? ORDER BY timestamp ASC LIMIT 1");
     }
 
-    public static History open(String historyPath) throws SQLException {
-        return new History(new File(historyPath));
-    }
-
-    public String getSchema() {
-        return schema;
-    }
-
-    public String getFqrn() {
-        return fqrn;
-    }
-
-    private void readProperties() throws SQLException {
-        Map<String, Object> properties = readPropertiesTable();
-        assert (properties.containsKey("schema") &&
-                properties.get("schema").equals("1.0"));
-        if (properties.containsKey("fqrn"))
-            fqrn = (String) properties.get("fqrn");
-        schema = (String) properties.get("schema");
-    }
-
-    private RevisionTag getTagByQuery(String query) throws SQLException {
-        Statement statement = createStatement();
-        ResultSet result = statement.executeQuery(query);
-        if (result != null && result.next()) {
-            RevisionTag rt = new RevisionTag(result);
-            statement.close();
-            result.close();
-            return rt;
-        }
-        return null;
-    }
+    public String schema() { return schema; }
+    public String fqrn() { return fqrn; }
 
     public List<RevisionTag> listTags() throws SQLException {
-        Statement statement = createStatement();
-        ResultSet results = statement.executeQuery(RevisionTag.sqlQueryAll());
-        List<RevisionTag> tags = new ArrayList<>();
-        while (results.next()) {
-            tags.add(new RevisionTag(results));
+        var tags = new ArrayList<RevisionTag>();
+        try (var stmt = createStatement();
+             var rs = stmt.executeQuery("SELECT " + FIELDS + " FROM tags ORDER BY timestamp DESC")) {
+            while (rs.next()) {
+                tags.add(RevisionTag.fromResultSet(rs));
+            }
         }
-        statement.close();
-        results.close();
         return tags;
     }
 
-    public RevisionTag getTagByName(String name) throws SQLException {
-        return getTagByQuery(RevisionTag.sqlQueryName(name));
+    public Optional<RevisionTag> getTagByName(String name) throws SQLException {
+        byNameStmt.setString(1, name);
+        try (var rs = byNameStmt.executeQuery()) {
+            return rs.next() ? Optional.of(RevisionTag.fromResultSet(rs)) : Optional.empty();
+        }
     }
 
-    public RevisionTag getTagByRevision(int revision) throws SQLException {
-        return getTagByQuery(RevisionTag.sqlQueryRevision(revision));
+    public Optional<RevisionTag> getTagByRevision(int revision) throws SQLException {
+        byRevisionStmt.setInt(1, revision);
+        try (var rs = byRevisionStmt.executeQuery()) {
+            return rs.next() ? Optional.of(RevisionTag.fromResultSet(rs)) : Optional.empty();
+        }
     }
 
-    public RevisionTag getTagByDate(long timestamp) throws SQLException {
-        return getTagByQuery(RevisionTag.sqlQueryDate(timestamp));
+    public Optional<RevisionTag> getTagByDate(long timestamp) throws SQLException {
+        byDateStmt.setLong(1, timestamp);
+        try (var rs = byDateStmt.executeQuery()) {
+            return rs.next() ? Optional.of(RevisionTag.fromResultSet(rs)) : Optional.empty();
+        }
     }
 
+    @Override
+    public void close() {
+        try { byNameStmt.close(); } catch (SQLException ignored) {}
+        try { byRevisionStmt.close(); } catch (SQLException ignored) {}
+        try { byDateStmt.close(); } catch (SQLException ignored) {}
+        super.close();
+    }
 }
