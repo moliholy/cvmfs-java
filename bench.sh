@@ -76,7 +76,7 @@ CVMFS_HTTP_PROXY=DIRECT
 CVMFS_SERVER_URL="http://cvmfs-stratum-one.cern.ch/cvmfs/@fqrn@"
 CVMFS_KEYS_DIR=/etc/cvmfs/keys/cern.ch
 EOF
-sudo cvmfs2 -o config=/tmp/cvmfs_bench.local "$REPO_FQRN" "$CPP_MOUNT" &
+sudo cvmfs2 -o config=/tmp/cvmfs_bench.local,allow_other "$REPO_FQRN" "$CPP_MOUNT" &
 CPP_PID=$!
 sleep 4
 
@@ -110,7 +110,7 @@ echo "CVMFS Benchmark: Java ${JAVA_VERSION} (FUSE) vs C++ v${CVMFS2_VERSION} (FU
 echo "Repository: $REPO_FQRN"
 echo ""
 
-HYPERFINE_OPTS="--warmup 3 --min-runs 50 --style full"
+HYPERFINE_OPTS="-N --warmup 3 --min-runs 50 --style full -i"
 
 echo "== stat =="
 hyperfine $HYPERFINE_OPTS \
