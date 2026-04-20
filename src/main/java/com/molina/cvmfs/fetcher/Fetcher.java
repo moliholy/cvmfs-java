@@ -7,9 +7,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import java.util.HexFormat;
 import java.util.zip.InflaterInputStream;
 
 public class Fetcher {
@@ -82,6 +86,32 @@ public class Fetcher {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Download interrupted", e);
+        }
+    }
+
+    public Path retrieveFileVerified(String fileName, String expectedHash) throws CvmfsException {
+        var path = retrieveFile(fileName);
+        try {
+            var data = Files.readAllBytes(path);
+            verifyHash(data, expectedHash);
+        } catch (IOException e) {
+            throw new CvmfsException("Failed to read file for verification: " + fileName, e);
+        }
+        return path;
+    }
+
+    public static void verifyHash(byte[] data, String expectedHash) throws CvmfsException {
+        var cleanHash = expectedHash.contains("-")
+                ? expectedHash.substring(0, expectedHash.indexOf('-'))
+                : expectedHash;
+        try {
+            var md = MessageDigest.getInstance("SHA-1");
+            var computed = HexFormat.of().formatHex(md.digest(data));
+            if (!computed.equals(cleanHash)) {
+                throw new CvmfsException("Hash mismatch: expected " + cleanHash + ", got " + computed);
+            }
+        } catch (NoSuchAlgorithmException e) {
+            throw new CvmfsException("SHA-1 not available", e);
         }
     }
 
