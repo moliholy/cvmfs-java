@@ -19,6 +19,8 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
+import com.molina.cvmfs.geo.GeoSorter;
+
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
@@ -30,7 +32,9 @@ import java.util.zip.InflaterInputStream;
 public class Fetcher {
     static final int MAX_RETRIES = 3;
     static final Duration BACKOFF_INIT = Duration.ofSeconds(2);
+    static final Duration BACKOFF_MAX = Duration.ofSeconds(10);
     static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(60);
+    static final long MAX_DOWNLOAD_SIZE = 1024L * 1024 * 1024;
 
     private final Cache cache;
     private String source;
@@ -71,6 +75,12 @@ public class Fetcher {
     public List<String> mirrors() { return List.copyOf(mirrors); }
     public boolean isOffline() { return offline.get(); }
     public long ioErrorCount() { return ioErrors.get(); }
+
+    public void sortMirrorsByGeo(String geoApiServer, String repoName) {
+        var all = allSources().toList();
+        var sorted = GeoSorter.sortServersByGeo(geoApiServer, repoName, all);
+        setSources(sorted);
+    }
 
     public void setSources(List<String> sorted) {
         if (sorted.isEmpty()) return;
@@ -197,7 +207,7 @@ public class Fetcher {
                         Thread.currentThread().interrupt();
                         throw new IOException("Download interrupted", ie);
                     }
-                    backoff = backoff.multipliedBy(2);
+                    backoff = backoff.multipliedBy(2).compareTo(BACKOFF_MAX) > 0 ? BACKOFF_MAX : backoff.multipliedBy(2);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
