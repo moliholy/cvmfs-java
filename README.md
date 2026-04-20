@@ -1,5 +1,6 @@
 # cvmfs-java
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.moliholy/cvmfs)](https://central.sonatype.com/artifact/io.github.moliholy/cvmfs)
 [![Java CI](https://github.com/moliholy/cvmfs-java/actions/workflows/java.yml/badge.svg)](https://github.com/moliholy/cvmfs-java/actions/workflows/java.yml)
 [![codecov](https://codecov.io/gh/moliholy/cvmfs-java/graph/badge.svg)](https://codecov.io/gh/moliholy/cvmfs-java)
 [![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg)](LICENSE)
@@ -21,12 +22,30 @@ A Java library for interacting with [CernVM-FS](https://cernvm.cern.ch/fs) repos
 - **Local caching**: two-level hex-prefix cache directory structure
 - **Modern Java**: built on Java 21 with records, sealed types, pattern matching, and `java.time`
 
+## Installation
+
+### Maven
+
+```xml
+<dependency>
+    <groupId>io.github.moliholy</groupId>
+    <artifactId>cvmfs</artifactId>
+    <version>0.3.0</version>
+</dependency>
+```
+
+### Gradle
+
+```groovy
+implementation 'io.github.moliholy:cvmfs:0.3.0'
+```
+
 ## Prerequisites
 
 - Java 21+
 - Maven 3.9+
 
-## Quick start
+## Building from source
 
 ```sh
 git clone https://github.com/moliholy/cvmfs-java.git
