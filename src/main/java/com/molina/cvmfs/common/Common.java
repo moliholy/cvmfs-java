@@ -14,6 +14,7 @@ public final class Common {
     public static final String MANIFEST_NAME = ".cvmfspublished";
     public static final String LAST_REPLICATION_NAME = ".cvmfs_last_snapshot";
     public static final String REPLICATING_NAME = ".cvmfs_is_snapshotting";
+    public static final String REFLOG_NAME = ".cvmfsreflog";
 
     private static final HexFormat HEX = HexFormat.of();
 
