@@ -2,12 +2,16 @@ package com.molina.cvmfs.fetcher;
 
 import com.molina.cvmfs.common.CvmfsException;
 
+import com.github.luben.zstd.ZstdInputStream;
+import net.jpountz.lz4.LZ4FrameInputStream;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -116,23 +120,66 @@ public class Fetcher {
     }
 
     private void downloadAndDecompress(String url, Path target) throws IOException {
+        var compressed = downloadBytes(url);
+        var decompressed = decompress(compressed);
+        Files.write(target, decompressed);
+    }
+
+    byte[] downloadBytes(String url) throws IOException {
         var request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(Duration.ofSeconds(60))
                 .GET()
                 .build();
         try {
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
             if (response.statusCode() >= 400) {
                 throw new IOException("HTTP " + response.statusCode() + " for " + url);
             }
-            try (var in = new InflaterInputStream(response.body());
-                 var out = Files.newOutputStream(target)) {
-                in.transferTo(out);
-            }
+            return response.body();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IOException("Download interrupted", e);
+        }
+    }
+
+    static byte[] decompress(byte[] data) throws IOException {
+        try {
+            return decompressZlib(data);
+        } catch (IOException ignored) {}
+
+        try {
+            return decompressZstd(data);
+        } catch (IOException ignored) {}
+
+        try {
+            return decompressLz4(data);
+        } catch (IOException ignored) {}
+
+        throw new IOException("Failed to decompress data with any supported format (zlib, zstd, lz4)");
+    }
+
+    static byte[] decompressZlib(byte[] data) throws IOException {
+        try (var in = new InflaterInputStream(new ByteArrayInputStream(data));
+             var out = new ByteArrayOutputStream()) {
+            in.transferTo(out);
+            return out.toByteArray();
+        }
+    }
+
+    static byte[] decompressZstd(byte[] data) throws IOException {
+        try (var in = new ZstdInputStream(new ByteArrayInputStream(data));
+             var out = new ByteArrayOutputStream()) {
+            in.transferTo(out);
+            return out.toByteArray();
+        }
+    }
+
+    static byte[] decompressLz4(byte[] data) throws IOException {
+        try (var in = new LZ4FrameInputStream(new ByteArrayInputStream(data));
+             var out = new ByteArrayOutputStream()) {
+            in.transferTo(out);
+            return out.toByteArray();
         }
     }
 }
