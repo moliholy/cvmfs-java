@@ -178,7 +178,12 @@ public class Fetcher {
     }
 
     private void downloadAndDecompress(String url, Path target) throws IOException {
-        var compressed = downloadBytesWithRetry(url);
+        byte[] compressed;
+        if (url.startsWith("file://")) {
+            compressed = Files.readAllBytes(Path.of(URI.create(url)));
+        } else {
+            compressed = downloadBytesWithRetry(url);
+        }
         var decompressed = decompress(compressed);
         Files.write(target, decompressed);
     }
