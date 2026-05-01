@@ -140,7 +140,7 @@ class FetcherAdditionalTest {
         Files.createDirectories(sourceDir);
         var fetcher = createLocalFetcher(sourceDir);
         var originalSource = fetcher.source();
-        fetcher.sortMirrorsByGeo("http://invalid.local:99999", "repo");
+        fetcher.sortMirrorsByGeo("http://invalid.local:1", "repo");
         assertNotNull(fetcher.source());
     }
 
